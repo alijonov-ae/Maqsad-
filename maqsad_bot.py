@@ -29,7 +29,7 @@ from telegram.error import RetryAfter, Forbidden, BadRequest, TelegramError
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 
-BOT_USERNAME = "@SIZNING_BOT_USERNAME"   # <-- shu yerga oʻz bot usernamengizni yozing
+BOT_USERNAME = "@gymangerbot"   # <-- shu yerga oʻz bot usernamengizni yozing
 BOT_FOOTER = f"\n\n🤖 {BOT_USERNAME}"
 
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +96,19 @@ def init_db():
     )""")
     conn.commit()
     conn.close()
+
+    c.execute("""CREATE TABLE IF NOT EXISTS goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        chat_id INTEGER,
+        name TEXT,
+        target_count INTEGER,
+        sent_count INTEGER DEFAULT 0,
+        done_count INTEGER DEFAULT 0,
+        interval_minutes INTEGER,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT
+    )""")
 
 # ── DB YORDAMCHI FUNKSIYALARI ───────────────────────────────
 def get_setting(key, default=""):
@@ -844,6 +857,20 @@ async def handle_other_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT id, chat_id, interval_minutes FROM goals WHERE is_active=1")
+    active_goals = c.fetchall()
+    conn.close()
+    for goal_id, chat_id, interval_minutes in active_goals:
+        app.job_queue.run_repeating(
+            send_goal_reminder,
+            interval=60,
+            first=interval_minutes * 60,
+            data={"goal_id": goal_id},
+            name=f"goal_{goal_id}",
+            chat_id=chat_id
+        )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
