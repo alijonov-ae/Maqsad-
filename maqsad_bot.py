@@ -33,9 +33,9 @@ from telegram.ext import (
 from telegram.error import RetryAfter, Forbidden, BadRequest, TelegramError
 
 # ── SOZLAMALAR ──────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "7329434421").split(",") if x.strip().isdigit()]
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "maqsad_sec_key_2026_super_secret")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 BOT_USERNAME = "@gymangerbot"   # <-- shu yerga oʻz bot usernamengizni yozing
 BOT_FOOTER = f"\n\n🤖 {BOT_USERNAME}"
