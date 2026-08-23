@@ -414,27 +414,6 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return False
 
 # ── MENYULAR ─────────────────────────────────────────────────
-MINI_APP_URL = "https://clck.ru/3V92Lb"
-
-def get_mini_app_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🚀 Mini Appni Ochish (Statistika & Xaridlar)",
-                web_app=WebAppInfo(url=MINI_APP_URL)
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🛒 Premium Xarid Qilish",
-                web_app=WebAppInfo(url=f"{MINI_APP_URL}?tab=purchases")
-            ),
-            InlineKeyboardButton(
-                "📊 Jonli Statistika",
-                web_app=WebAppInfo(url=f"{MINI_APP_URL}?tab=stats")
-            )
-        ]
-    ])
 def main_menu_keyboard():
     keyboard = [
         [KeyboardButton("🛠 Foydali botlar"), KeyboardButton("🎬 Videodan ovoz")],
