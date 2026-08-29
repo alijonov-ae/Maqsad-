@@ -570,7 +570,7 @@ def useful_bots_keyboard():
         [InlineKeyboardButton("📩 Admin bilan bog'lanish", callback_data="contact_admin")],
         [InlineKeyboardButton("🪄 Fon o'chirish", callback_data="bg_remove"),
          InlineKeyboardButton("📐 4K rasm", callback_data="upscale_4k")],
-        [InlineKeyboardButton("🔥 Avto-reaksiya", callback_data="admin_avto_reaction")],
+        [InlineKeyboardButton("🔥 Kanalga avto-reaksiya", callback_data="info_avto_reaction")],
         [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -1585,6 +1585,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "menu_ai":
         await start_ai_chat_flow(update, context)
+
+    elif data == "info_avto_reaction":
+        await query.edit_message_text(
+            "🔥 <b>Kanalga avto-reaksiya</b>\n\n"
+            "Botni istalgan kanalingizga <b>administrator</b> qilib qo'shing — "
+            "yangi postlaringizga avtomatik ravishda tasodifiy emoji bilan reaksiya bildiriladi "
+            "(har 5 daqiqada bir marta).",
+            parse_mode="HTML",
+            reply_markup=back_keyboard("back_useful")
+        )
 
     elif data == "back_useful":
         context.user_data["state"] = None
