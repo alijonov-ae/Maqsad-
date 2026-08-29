@@ -570,8 +570,8 @@ def useful_bots_keyboard():
         [InlineKeyboardButton("📩 Admin bilan bog'lanish", callback_data="contact_admin")],
         [InlineKeyboardButton("🪄 Fon o'chirish", callback_data="bg_remove"),
          InlineKeyboardButton("📐 4K rasm", callback_data="upscale_4k")],
+        [InlineKeyboardButton("🔥 Avto-reaksiya", callback_data="admin_avto_reaction"),
         [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")],
-        [InlineKeyboardButton("📣 Kanallarga reklama", callback_data="admin_channel_ad")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
