@@ -1,5 +1,5 @@
 # ============================================================
-# UNIVERSAL TELEGRAM BOT - TO'LIQ VA YANGILANGAN KOD
+# UNIVERSAL TELEGRAM BOT - TO'LIQ VA YANGILANGAN 
 # Kerakli kutubxonalar:
 # pip install python-telegram-bot==20.7 Pillow qrcode[pil] gtts
 # ============================================================
