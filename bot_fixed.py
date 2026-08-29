@@ -571,7 +571,7 @@ def useful_bots_keyboard():
         [InlineKeyboardButton("🪄 Fon o'chirish", callback_data="bg_remove"),
          InlineKeyboardButton("📐 4K rasm", callback_data="upscale_4k")],
         [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")],
-         InlineKeyboardButton("📣 Kanallarga reklama", callback_data="admin_channel_ad")],
+        [InlineKeyboardButton("📣 Kanallarga reklama", callback_data="admin_channel_ad")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
