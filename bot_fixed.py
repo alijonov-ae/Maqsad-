@@ -461,7 +461,7 @@ async def premium_emoji_finalize(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         if is_new:
-            stickers_input = [InputSticker(sticker=b, emoji_list=[e]) for b, e in items]
+            stickers_input = [InputSticker(sticker=b, emoji_list=[e], format="static") for b, e in items]
             await context.bot.create_new_sticker_set(
                 user_id=user_id,
                 name=pack_name,
@@ -476,7 +476,7 @@ async def premium_emoji_finalize(update: Update, context: ContextTypes.DEFAULT_T
                 await context.bot.add_sticker_to_set(
                     user_id=user_id,
                     name=pack_name,
-                    sticker=InputSticker(sticker=b, emoji_list=[e]),
+                    sticker=InputSticker(sticker=b, emoji_list=[e], format="static"),
                 )
         increment_pack_item_count(pack_name, len(items), DB_PATH)
         increment_usage(user_id, "premium_emoji")
@@ -1088,10 +1088,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome,
         parse_mode="HTML",
         reply_markup=main_menu_inline_keyboard()
-    )
-    await update.message.reply_text(
-        "🚀 Mini App orqali barcha xaridlar tarixi va statistikani ko'rishingiz mumkin:",
-        reply_markup=get_mini_app_keyboard()
     )
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1811,8 +1807,6 @@ async def send_video_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     file_id, label, is_prem = row
     if is_prem and user_id not in ADMIN_IDS and not is_premium(user_id):
-        await update.message.reply_text(
-            "👑 Bu video faqat Premium foydalanuvchilar uchun!",
             reply_markup=get_mini_app_keyboard()
         )
         return
@@ -2196,7 +2190,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buf = io.BytesIO()
                 await file.download_to_memory(buf)
                 webp_bytes = create_sticker_from_image_bytes(buf.getvalue())
-                stickers_input.append(InputSticker(sticker=webp_bytes, emoji_list=["😀"]))
+                stickers_input.append(InputSticker(sticker=webp_bytes, emoji_list=["😀"], format="static"))
 
             try:
                 await context.bot.create_new_sticker_set(
