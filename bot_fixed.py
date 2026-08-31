@@ -17,7 +17,7 @@ from datetime import datetime
 import requests
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, InputSticker,
+    ReplyKeyboardMarkup, KeyboardButton, InputSticker,
     ReactionTypeEmoji
 )
 from telegram.ext import (
@@ -1110,21 +1110,6 @@ async def premium_oldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text("❌ Format: /Premiumoldi userid")
-async def mini_app_premium_tasdiqla(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    try:
-        res= requests.post(f"{MINI_APP_URL}/api/bot/grant-premium", json={
-            "user_id": user.id,
-            "username": user.username,
-            "full_name": user.full_name,
-            "item_title": "VIP Premium (Mini App orqali)"
-        })
-        await update.message.reply_text(
-            f"🎉 Tabriklaymiz, {user.first_name}! Sizga VIP Premium maqomi faollashtirildi!"
-        )
-    except Exception as e:
-        await update.message.reply_text("Xatolik: Mini App bilan bog'lanib bo'lmadi.")
-
 # ── HISOBIM ───────────────────────────────────────────────────
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1803,12 +1788,6 @@ async def send_video_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE,
     conn.close()
 
     if not row:
-        return
-
-    file_id, label, is_prem = row
-    if is_prem and user_id not in ADMIN_IDS and not is_premium(user_id):
-            reply_markup=get_mini_app_keyboard()
-        )
         return
 
     await update.message.reply_video(
@@ -3032,7 +3011,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("Premiumoldi", premium_oldi))
-    app.add_handler(CommandHandler("miniapppremium", mini_app_premium_tasdiqla))
     app.add_handler(CommandHandler("menu", menu_command))
     # Callbacklar
     app.add_handler(CallbackQueryHandler(callback_handler))
