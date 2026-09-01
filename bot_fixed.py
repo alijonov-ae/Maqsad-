@@ -450,6 +450,15 @@ async def premium_emoji_finalize(update: Update, context: ContextTypes.DEFAULT_T
     is_new = context.user_data.get("pe_is_new_pack", True)
 
     if not items or not pack_name:
+        await query.message.reply_text("📭 Hali hech qanday emoji qo'shilmagan! Avval kamida bitta rasm yuboring.")
+        return
+    if check_limit(user_id, "premium_emoji"):
+        await query.message.reply_text("❌ Premium emoji limiti tugadi!")
+        return
+
+    wait_msg = await query.message.reply_text("⏳ Premium emoji pack tayyorlanmoqda, biroz kuting...")
+
+    if not items or not pack_name:
         await query.answer("📭 Hali hech qanday emoji qo'shilmagan!", show_alert=True)
         return
     if check_limit(user_id, "premium_emoji"):
