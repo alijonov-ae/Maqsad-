@@ -13,6 +13,7 @@ import io
 import html
 import asyncio
 import random
+import secrets
 import tempfile
 import subprocess
 from datetime import datetime
@@ -146,13 +147,13 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 # ── PREMIUM CUSTOM-EMOJI PACK'LARI (DB) ───────────────────────
-def add_custom_emoji_pack(pack_name, owner_id, title, DB_PATH):
+def add_custom_emoji_pack(pack_name, owner_id, title, DB_PATH, sticker_format="static"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""INSERT OR REPLACE INTO custom_emoji_packs
-        (pack_name, owner_id, title, item_count, created_at)
-        VALUES (?,?,?, COALESCE((SELECT item_count FROM custom_emoji_packs WHERE pack_name=?),0), ?)""",
-        (pack_name, owner_id, title, pack_name, datetime.now().isoformat()))
+        (pack_name, owner_id, title, item_count, created_at, sticker_format)
+        VALUES (?,?,?, COALESCE((SELECT item_count FROM custom_emoji_packs WHERE pack_name=?),0), ?, ?)""",
+        (pack_name, owner_id, title, pack_name, datetime.now().isoformat(), sticker_format))
     conn.commit()
     conn.close()
 
@@ -177,7 +178,11 @@ def get_user_emoji_packs(owner_id, DB_PATH):
 def get_emoji_pack(pack_name, DB_PATH):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT pack_name, owner_id, title, item_count FROM custom_emoji_packs WHERE pack_name=?", (pack_name,))
+    c.execute(
+        "SELECT pack_name, owner_id, title, item_count, COALESCE(sticker_format,'static') "
+        "FROM custom_emoji_packs WHERE pack_name=?",
+        (pack_name,)
+    )
     row = c.fetchone()
     conn.close()
     return row
@@ -235,6 +240,66 @@ def _convert_to_webp_emoji_sync(input_bytes: bytes) -> bytes:
 
 async def convert_to_webp_emoji(input_bytes: bytes) -> bytes:
     return await asyncio.to_thread(_convert_to_webp_emoji_sync, input_bytes)
+
+
+# ── ANIMATSION CUSTOM-EMOJI UCHUN WEBM/VP9 ──────────────────
+def _convert_to_webm_emoji_sync(input_bytes: bytes) -> bytes:
+    """Animatsion manbani Telegram "video" custom-emoji talablariga o'tkazadi.
+
+    MUHIM: Telegram animatsion emoji uchun animatsion WEBP'ni QABUL QILMAYDI -
+    faqat VP9 kodekli WEBM kerak. 100x100 px, 3 soniyagacha, 64 KB gacha.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp_in:
+        tmp_in.write(input_bytes)
+        tmp_in_path = tmp_in.name
+
+    tmp_out_path = tmp_in_path + "_emoji.webm"
+    max_bytes = 64 * 1024
+
+    try:
+        def _run(crf: int, fps: int):
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", tmp_in_path,
+                "-t", "3",
+                "-vf", f"crop=min(iw\\,ih):min(iw\\,ih),scale=100:100:flags=lanczos,fps={fps}",
+                "-c:v", "libvpx-vp9",
+                "-pix_fmt", "yuva420p",   # alfa (shaffoflik) saqlanadi
+                "-crf", str(crf),
+                "-b:v", "0",
+                "-an", "-sn",
+                tmp_out_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+        # 64 KB ga sig'guncha sifat/fps ni bosqichma-bosqich pasaytiramiz
+        for crf, fps in ((32, 30), (40, 24), (48, 20), (55, 15)):
+            _run(crf, fps)
+            with open(tmp_out_path, "rb") as f:
+                data = f.read()
+            if len(data) <= max_bytes:
+                return data
+        return data
+    finally:
+        for p in (tmp_in_path, tmp_out_path):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+async def convert_to_webm_emoji(input_bytes: bytes) -> bytes:
+    return await asyncio.to_thread(_convert_to_webm_emoji_sync, input_bytes)
+
+
+def _is_animated_bytes(data: bytes) -> bool:
+    """Fayl animatsion (GIF/animatsion WEBP/video) ekanligini aniqlaydi."""
+    # Video konteynerlari: MP4/MOV (ftyp), WEBM/MKV (EBML), AVI
+    if data[4:8] == b"ftyp" or data[:4] == b"\x1a\x45\xdf\xa3" or data[:4] == b"RIFF" and data[8:12] == b"AVI ":
+        return True
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return bool(getattr(img, "is_animated", False))
+    except Exception:
+        return False
 
 
 def create_emoji_from_image_bytes(image_bytes: bytes) -> bytes:
@@ -354,19 +419,42 @@ async def premium_emoji_start_new(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+def build_pack_title(user_title: str, BOT_USERNAME: str) -> str:
+    """Pack sarlavhasini "<tanlangan ism> • @bot_username" ko'rinishida yasaydi.
+
+    Telegram sarlavha uchun 1-64 belgi ruxsat beradi, shuning uchun foydalanuvchi
+    kiritgan qismni qisqartiramiz - aks holda create_new_sticker_set xato beradi.
+    """
+    suffix = f" • {BOT_USERNAME}"
+    base = " ".join((user_title or "").split()) or "Mening Emojilarim"
+    room = 64 - len(suffix)
+    if len(base) > room:
+        base = base[:room - 1].rstrip() + "…"
+    return f"{base}{suffix}"
+
+
 async def premium_emoji_receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, BOT_USERNAME: str):
     user_id = update.effective_user.id
-    pack_title = text.strip()[:64] or "Mening Emojilarim"
-    pack_name = f"epk{user_id}{int(datetime.now().timestamp())}_by_{BOT_USERNAME.lstrip('@')}"
+    # TUZATISH: sarlavhaga bot username qo'shiladi -> "Ism • @kerakli_boladi_bot"
+    pack_title = build_pack_title(text, BOT_USERNAME)
+    # TUZATISH: nom faqat soniya aniqligidagi vaqtga asoslangani uchun bir soniya
+    # ichida yaratilgan ikki pack bir xil nom olardi va bazada biri ikkinchisini
+    # o'chirib yuborardi. Tasodifiy qo'shimcha bilan nom yakka bo'ladi.
+    suffix = secrets.token_hex(3)
+    pack_name = f"epk{user_id}{int(datetime.now().timestamp())}{suffix}_by_{BOT_USERNAME.lstrip('@')}"
     context.user_data["pe_pack_title"] = pack_title
     context.user_data["pe_pack_name"] = pack_name
     context.user_data["pe_is_new_pack"] = True
     context.user_data["pe_items"] = []
+    context.user_data["pe_format"] = None
     context.user_data["state"] = "premium_emoji_collect"
     await update.message.reply_text(
         f"✅ Pack nomi: <b>{html.escape(pack_title)}</b>\n\n"
-        f"Endi emoji qilmoqchi bo'lgan rasmlarni birma-bir yuboring. Har birini yuborgach, "
-        f"unga mos asosiy emoji tanlashingiz so'raladi.\n\nTayyor bo'lgach \"✅ Yakunlash\" tugmasini bosing.",
+        f"Endi emoji qilmoqchi bo'lgan fayllarni birma-bir yuboring:\n"
+        f"• 🖼 Rasm yoki WEBP/PNG fayl — oddiy emoji\n"
+        f"• 🎬 GIF yoki video — animatsion emoji\n\n"
+        f"Har birini yuborgach, unga mos asosiy emoji tanlashingiz so'raladi.\n\n"
+        f"Tayyor bo'lgach \"✅ Yakunlash\" tugmasini bosing.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Yakunlash (pack yaratish)", callback_data="pe_finalize")],
@@ -398,6 +486,8 @@ async def premium_emoji_select_pack(update: Update, context: ContextTypes.DEFAUL
     context.user_data["pe_pack_title"] = pack[2]
     context.user_data["pe_is_new_pack"] = False
     context.user_data["pe_items"] = []
+    # Mavjud pack formati qat'iy: Telegram aralash formatga ruxsat bermaydi.
+    context.user_data["pe_format"] = pack[4] if len(pack) > 4 else "static"
     context.user_data["state"] = "premium_emoji_collect"
     await _reply_or_edit(
         update,
@@ -410,21 +500,100 @@ async def premium_emoji_select_pack(update: Update, context: ContextTypes.DEFAUL
     )
 
 
+def _extract_emoji_source_file_id(message) -> str | None:
+    """Xabardan emoji uchun manba file_id ni ajratadi.
+
+    TUZATISH: avval faqat `message.photo` qabul qilinardi. Foydalanuvchi WEBP/PNG
+    faylni hujjat (document) sifatida yuborsa yoki GIF/video yuborsa, bot uni
+    umuman "ko'rmasdi" - hech qanday javob bermasdi.
+    """
+    if message.photo:
+        return message.photo[-1].file_id
+    if message.document:
+        return message.document.file_id
+    if message.animation:
+        return message.animation.file_id
+    if message.video:
+        return message.video.file_id
+    if message.video_note:
+        return message.video_note.file_id
+    if message.sticker:
+        return message.sticker.file_id
+    return None
+
+
 async def premium_emoji_receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    buf = io.BytesIO()
-    await file.download_to_memory(buf)
-    try:
-        webp_bytes = create_emoji_from_image_bytes(buf.getvalue())
-    except Exception as e:
-        logger.error(f"Emoji rasm tayyorlash xatosi: {e}")
-        await update.message.reply_text("❌ Rasmni ishlashda xatolik yuz berdi, boshqa rasm yuboring.")
+    """Rasm/WEBP/PNG/GIF/video qabul qilib emoji uchun tayyorlaydi."""
+    file_id = _extract_emoji_source_file_id(update.message)
+    if not file_id:
+        await update.message.reply_text(
+            "❌ Bu turdagi faylni emoji qilib bo'lmaydi.\n"
+            "Rasm, WEBP/PNG fayl, GIF yoki video yuboring."
+        )
         return
-    context.user_data["pe_pending_image"] = webp_bytes
+
+    status = await update.message.reply_text("⏳ Fayl qabul qilindi, tayyorlanmoqda...")
+    try:
+        file = await context.bot.get_file(file_id)
+        buf = io.BytesIO()
+        await file.download_to_memory(buf)
+        raw = buf.getvalue()
+    except TelegramError as e:
+        logger.error(f"Emoji manbasini yuklab bo'lmadi: {e}")
+        await status.edit_text("❌ Faylni yuklab bo'lmadi. Qayta urinib ko'ring.")
+        return
+
+    animated = _is_animated_bytes(raw)
+    item_format = "video" if animated else "static"
+
+    # Telegram bitta pack ichida aralash formatga ruxsat bermaydi.
+    pack_format = context.user_data.get("pe_format")
+    if pack_format and pack_format != item_format:
+        kerak = "oddiy rasm (WEBP/PNG)" if pack_format == "static" else "GIF yoki video"
+        await status.edit_text(
+            f"❌ Bu pack <b>{pack_format}</b> formatida.\n"
+            f"Telegram bitta pack ichida formatlarni aralashtirishga ruxsat bermaydi.\n\n"
+            f"Iltimos {kerak} yuboring.",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        if animated:
+            emoji_bytes = await convert_to_webm_emoji(raw)
+            filename = "emoji.webm"
+        else:
+            emoji_bytes = await asyncio.to_thread(create_emoji_from_image_bytes, raw)
+            filename = "emoji.webp"
+    except FileNotFoundError:
+        logger.error("ffmpeg topilmadi - animatsion emoji yaratilmadi")
+        await status.edit_text(
+            "❌ Serverda ffmpeg o'rnatilmagan, animatsion emoji tayyorlab bo'lmaydi.\n"
+            "Hozircha oddiy rasm yuboring."
+        )
+        return
+    except (subprocess.CalledProcessError, OSError, ValueError) as e:
+        logger.error(f"Emoji tayyorlash xatosi: {e}")
+        await status.edit_text("❌ Faylni ishlashda xatolik yuz berdi, boshqa fayl yuboring.")
+        return
+
+    if len(emoji_bytes) > 64 * 1024:
+        await status.edit_text(
+            f"❌ Fayl juda katta ({len(emoji_bytes) // 1024} KB). "
+            f"Telegram emoji uchun 64 KB gacha ruxsat beradi.\n"
+            f"Qisqaroq yoki soddaroq fayl yuboring."
+        )
+        return
+
+    context.user_data["pe_pending_image"] = emoji_bytes
+    context.user_data["pe_pending_format"] = item_format
+    context.user_data["pe_pending_name"] = filename
     context.user_data["state"] = "premium_emoji_choose_emoji"
-    await update.message.reply_text(
-        "😊 Bu rasm uchun mos asosiy emojini tanlang:",
+
+    tur = "🎬 Animatsion" if animated else "🖼 Oddiy"
+    await status.edit_text(
+        f"✅ Qabul qilindi — {tur} emoji ({len(emoji_bytes) // 1024 or 1} KB)\n\n"
+        f"😊 Bu fayl uchun mos asosiy emojini tanlang:",
         reply_markup=_emoji_choice_keyboard()
     )
 
@@ -435,8 +604,13 @@ async def premium_emoji_receive_emoji_choice(update: Update, context: ContextTyp
         await update.callback_query.answer("❌ Avval rasm yuboring!", show_alert=True)
         return
     items = context.user_data.setdefault("pe_items", [])
-    items.append((pending, emoji))
+    item_format = context.user_data.get("pe_pending_format", "static")
+    items.append((pending, emoji, item_format))
+    # Birinchi element pack formatini belgilaydi.
+    if not context.user_data.get("pe_format"):
+        context.user_data["pe_format"] = item_format
     context.user_data["pe_pending_image"] = None
+    context.user_data["pe_pending_format"] = None
     context.user_data["state"] = "premium_emoji_collect"
     await update.callback_query.edit_message_text(
         f"✅ Qo'shildi ({emoji})! Hozircha: <b>{len(items)}</b> ta emoji.\n\n"
@@ -458,15 +632,8 @@ async def premium_emoji_finalize(update: Update, context: ContextTypes.DEFAULT_T
     pack_title = context.user_data.get("pe_pack_title", "Mening Emojilarim")
     is_new = context.user_data.get("pe_is_new_pack", True)
 
-    if not items or not pack_name:
-        await query.message.reply_text("📭 Hali hech qanday emoji qo'shilmagan! Avval kamida bitta rasm yuboring.")
-        return
-    if check_limit(user_id, "premium_emoji"):
-        await query.message.reply_text("❌ Premium emoji limiti tugadi!")
-        return
-
-    wait_msg = await query.message.reply_text("⏳ Premium emoji pack tayyorlanmoqda, biroz kuting...")
-
+    # TUZATISH: bu blok ikki marta takrorlangan edi -> ikkita "tayyorlanmoqda" xabari
+    # chiqardi va birinchisi hech qachon o'chirilmasdi.
     if not items or not pack_name:
         await query.answer("📭 Hali hech qanday emoji qo'shilmagan!", show_alert=True)
         return
@@ -477,43 +644,84 @@ async def premium_emoji_finalize(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer("⏳ Pack yaratilmoqda...")
     wait_msg = await query.message.reply_text("⏳ Premium emoji pack tayyorlanmoqda, biroz kuting...")
 
+    # Har bir element o'z formati bilan saqlanadi (statik WEBP yoki animatsion WEBM).
+    # Eski ma'lumotlar 2 elementli bo'lishi mumkin - moslashib o'qiymiz.
+    norm_items = [(it[0], it[1], it[2] if len(it) > 2 else "static") for it in items]
+    pack_format = context.user_data.get("pe_format") or norm_items[0][2]
+
     try:
         if is_new:
-            stickers_input = [InputSticker(sticker=b, emoji_list=[e], format="static") for b, e in items]
+            # TUZATISH: `sticker_format` argumenti python-telegram-bot 21.0 dan boshlab
+            # OLIB TASHLANGAN (Bot API 7.2). Uni berish TypeError bilan qulardi, ya'ni
+            # premium emoji pack yaratish HECH QACHON ishlamagan. Format endi faqat
+            # InputSticker ichida beriladi.
+            stickers_input = [
+                InputSticker(sticker=b, emoji_list=[e], format=fmt)
+                for b, e, fmt in norm_items
+            ]
             await context.bot.create_new_sticker_set(
                 user_id=user_id,
                 name=pack_name,
                 title=pack_title,
                 stickers=stickers_input,
-                sticker_format="static",
                 sticker_type="custom_emoji",
             )
-            add_custom_emoji_pack(pack_name, user_id, pack_title, DB_PATH)
+            add_custom_emoji_pack(pack_name, user_id, pack_title, DB_PATH, pack_format)
         else:
-            for b, e in items:
+            for b, e, fmt in norm_items:
                 await context.bot.add_sticker_to_set(
                     user_id=user_id,
                     name=pack_name,
-                    sticker=InputSticker(sticker=b, emoji_list=[e], format="static"),
+                    sticker=InputSticker(sticker=b, emoji_list=[e], format=fmt),
                 )
-        increment_pack_item_count(pack_name, len(items), DB_PATH)
+        increment_pack_item_count(pack_name, len(norm_items), DB_PATH)
         increment_usage(user_id, "premium_emoji")
 
         link = f"https://t.me/addemoji/{pack_name}"
         await wait_msg.delete()
         await query.message.reply_text(
-            f"✅ Premium emoji pack tayyor!\n\n🔗 Havola: {link}\n\n"
+            f"✅ <b>Premium emoji pack tayyor!</b>\n\n"
+            f"📦 Nomi: <b>{html.escape(pack_title)}</b>\n"
+            f"😊 Emojilar: {len(norm_items)} ta\n\n"
+            f"🔗 Havola: {link}\n\n"
             f"Havolani bosib, emojilarni Telegramga qo'shib oling!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Havolani ulashish", url=f"https://t.me/share/url?url={link}")],
+                [InlineKeyboardButton("✨ Yana pack yaratish", callback_data="premium_emoji_menu")],
+            ])
+        )
+    except BadRequest as e:
+        # Telegram xatolarini tushunarli tilga o'giramiz.
+        raw = str(e).lower()
+        if "sticker set name is already occupied" in raw:
+            hint = "Bu nomdagi pack allaqachon mavjud. Qayta urinib ko'ring."
+        elif "peer_id_invalid" in raw or "user not found" in raw:
+            hint = "Telegram sizni topa olmadi. Botga /start yozib qayta urinib ko'ring."
+        elif "sticker_png_dimensions" in raw or "invalid sticker dimensions" in raw:
+            hint = "Fayl o'lchami mos emas (100x100 bo'lishi kerak)."
+        elif "sticker_video_big" in raw or "file is too big" in raw or "too big" in raw:
+            hint = "Fayl 64 KB dan katta. Qisqaroq/soddaroq fayl yuboring."
+        elif "stickers_too_much" in raw:
+            hint = "Pack to'lgan (maksimum 200 emoji)."
+        elif "invalid sticker emojis" in raw:
+            hint = "Tanlangan emoji Telegram tomonidan qabul qilinmadi."
+        else:
+            hint = f"Telegram javobi: {e}"
+        logger.error(f"Premium emoji pack BadRequest: {e}")
+        await wait_msg.edit_text(f"❌ Pack yaratilmadi.\n\n{hint}")
+    except TelegramError as e:
+        logger.error(f"Premium emoji pack TelegramError: {e}")
+        await wait_msg.edit_text(
+            "❌ Telegram bilan aloqada xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring."
         )
     except Exception as e:
-        logger.error(f"Premium emoji pack error: {e}")
-        await wait_msg.edit_text(f"❌ Pack yaratishda xatolik yuz berdi: {e}")
+        logger.exception("Premium emoji pack kutilmagan xato")
+        await wait_msg.edit_text(f"❌ Kutilmagan xatolik: {type(e).__name__}")
 
-    context.user_data.pop("pe_items", None)
-    context.user_data.pop("pe_pack_name", None)
-    context.user_data.pop("pe_pack_title", None)
-    context.user_data.pop("pe_pending_image", None)
-    context.user_data.pop("pe_is_new_pack", None)
+    for key in ("pe_items", "pe_pack_name", "pe_pack_title", "pe_pending_image",
+                "pe_is_new_pack", "pe_format", "pe_pending_format", "pe_pending_name"):
+        context.user_data.pop(key, None)
     context.user_data["state"] = None
     await increment_action_and_check_ad(update, context)
 
@@ -601,6 +809,12 @@ def init_db():
         item_count INTEGER DEFAULT 0,
         created_at TEXT
     )""")
+    # Telegram bitta pack ichida faqat BIR xil formatga ruxsat beradi (static yoki video),
+    # shuning uchun pack formatini eslab qolamiz - mavjud pack'ga qo'shishda kerak bo'ladi.
+    try:
+        c.execute("ALTER TABLE custom_emoji_packs ADD COLUMN sticker_format TEXT DEFAULT 'static'")
+    except sqlite3.OperationalError:
+        pass  # ustun allaqachon mavjud
 
     c.execute("""CREATE TABLE IF NOT EXISTS bot_channels (
         chat_id INTEGER PRIMARY KEY,
@@ -1976,33 +2190,86 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=admin_menu_keyboard()
     )
 
+def _split_for_telegram(text: str, limit: int = 4000):
+    """Uzun matnni Telegram limitiga (4096) sig'adigan bo'laklarga bo'ladi.
+
+    Iloji bo'lsa qator oxiridan bo'ladi, aks holda so'z oxiridan.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return [text]
+    chunks, rest = [], text
+    while len(rest) > limit:
+        cut = rest.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = rest.rfind(" ", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        chunks.append(rest)
+    return chunks
+
+
+def _ask_gemini_sync(text: str) -> str:
+    """Gemini'dan javob oladi (sinxron - asyncio.to_thread ichida chaqiriladi)."""
+    response = gemini_model.generate_content(text)
+    return (getattr(response, "text", None) or "").strip()
+
+
 async def ask_universal_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    # TUZATISH: kalit bo'lmasa bytez_client None bo'ladi - avval bu AttributeError berardi.
-    if bytez_client is None:
+    """AI'dan javob oladi: avval Gemini, keyin Bytez modellari.
+
+    TUZATISH: avval faqat Bytez ishlatilardi. Bytez'dagi barcha model ID'lari 404
+    qaytaradi (akkaunt katalogi bo'sh), shuning uchun AI umuman ishlamasdi.
+    Kodda `gemini_model` allaqachon sozlangan, lekin HECH QAYERDA ishlatilmagan edi -
+    endi u asosiy provayder.
+    """
+    if gemini_model is None and bytez_client is None:
         await update.message.reply_text(
-            "❌ AI xizmati sozlanmagan (BYTEZ_API_KEY yo'q). Admin bilan bog'laning."
+            "❌ AI xizmati sozlanmagan.\n\n"
+            "Admin uchun: <code>GEMINI_API_KEY</code> (aistudio.google.com'dan bepul olinadi) "
+            "yoki <code>BYTEZ_API_KEY</code> muhit o'zgaruvchisini qo'ying.",
+            parse_mode="HTML"
         )
         return
 
     wait_msg = await update.message.reply_text("⏳ O'ylanmoqda...")
     answer = None
-    for provider, model_id in AI_MODELS:
-        try:
-            extra_headers = {}
-            if PROVIDER_KEYS.get(provider):
-                extra_headers["provider-key"] = PROVIDER_KEYS[provider]
+    errors = []
 
-            response = await asyncio.to_thread(
-                bytez_client.chat.completions.create,
-                model=model_id,
-                messages=[{"role": "user", "content": text}],
-                extra_headers=extra_headers or None,
-            )
-            answer = response.choices[0].message.content
-            break
+    # 1) Asosiy provayder - Google Gemini
+    if gemini_model is not None:
+        try:
+            answer = await asyncio.to_thread(_ask_gemini_sync, text)
+            if not answer:
+                errors.append("Gemini: bo'sh javob")
         except Exception as e:
-            logger.error(f"{provider} ({model_id}) xato: {e}")
-            continue
+            logger.error(f"Gemini xato: {e}")
+            errors.append(f"Gemini: {type(e).__name__}")
+
+    # 2) Zaxira provayder - Bytez
+    if not answer and bytez_client is not None:
+        for provider, model_id in AI_MODELS:
+            try:
+                extra_headers = {}
+                if PROVIDER_KEYS.get(provider):
+                    extra_headers["provider-key"] = PROVIDER_KEYS[provider]
+
+                response = await asyncio.to_thread(
+                    bytez_client.chat.completions.create,
+                    model=model_id,
+                    messages=[{"role": "user", "content": text}],
+                    extra_headers=extra_headers or None,
+                )
+                answer = (response.choices[0].message.content or "").strip()
+                if answer:
+                    break
+            except Exception as e:
+                logger.error(f"{provider} ({model_id}) xato: {e}")
+                errors.append(f"{provider}: {type(e).__name__}")
+                continue
 
     # TUZATISH: xabarni o'chirish o'zi ham xato berishi mumkin (allaqachon o'chirilgan bo'lsa)
     # va bu javobni yuborishga to'sqinlik qilardi.
@@ -2010,10 +2277,17 @@ async def ask_universal_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         await wait_msg.delete()
     except TelegramError as e:
         logger.warning(f"Kutish xabarini o'chirib bo'lmadi: {e}")
+
     if answer:
-        await update.message.reply_text(answer)
+        # TUZATISH: Telegram bitta xabarga 4096 belgi ruxsat beradi. Uzun AI javoblari
+        # "Message is too long" xatosi bilan yo'qolib ketardi - endi bo'laklab yuboriladi.
+        for chunk in _split_for_telegram(answer):
+            await update.message.reply_text(chunk)
     else:
-        await update.message.reply_text("❌ Kechirasiz, hozircha AI xizmatlari ishlamayapti.")
+        detail = "\n\nℹ Sabab: " + ", ".join(errors[:3]) if errors else ""
+        await update.message.reply_text(
+            f"❌ Kechirasiz, hozircha AI xizmatlari ishlamayapti.{detail}"
+        )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2935,6 +3209,11 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_subscription(update, context):
         return
 
+    # Video yuborilsa animatsion premium emoji yasaymiz.
+    if state == "premium_emoji_collect":
+        await premium_emoji_receive_image(update, context)
+        return
+
     if state == "broadcast" and user_id in ADMIN_IDS:
         wait_msg = await update.message.reply_text("⏳ Tarqatilmoqda, iltimos kuting...")
         success, total = await broadcast_copy_to_all(context, update.message.chat_id, update.message.message_id)
@@ -3058,6 +3337,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_other_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = context.user_data.get("state")
+
+    # TUZATISH: premium emoji uchun WEBP/PNG hujjat, GIF yoki sticker yuborilganda
+    # bu holat umuman tekshirilmasdi - bot javob bermay jim turardi.
+    if state == "premium_emoji_collect":
+        await premium_emoji_receive_image(update, context)
+        return
 
     if state == "broadcast" and user_id in ADMIN_IDS:
         wait_msg = await update.message.reply_text("⏳ Tarqatilmoqda, iltimos kuting...")
