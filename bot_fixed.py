@@ -1,7 +1,9 @@
 # ============================================================
 # UNIVERSAL TELEGRAM BOT - TO'LIQ VA YANGILANGAN 
 # Kerakli kutubxonalar:
-# pip install python-telegram-bot==20.7 Pillow qrcode[pil] gtts
+#   pip install -r requirements.txt
+# Tashqi dastur: ffmpeg (dumaloq video, MP3 ajratish, WEBP emoji uchun majburiy)
+#   apt-get install -y ffmpeg
 # ============================================================
 
 import logging
@@ -68,7 +70,10 @@ if GEMINI_API_KEY:
     gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 else:
     gemini_model = None
-BYTEZ_API_KEY = "9f212dbd7879edfd0850f9610a28178b"
+# XAVFSIZLIK TUZATISHI: bu kalit avval kodda ochiq yozilgan edi va repo ochiq (public)
+# bo'lgani uchun hammaga ko'rinardi. Endi muhit o'zgaruvchisidan o'qiladi.
+# MUHIM: eski kalitni Bytez panelida bekor qilib (rotate), yangisini BYTEZ_API_KEY ga qo'ying.
+BYTEZ_API_KEY = os.environ.get("BYTEZ_API_KEY", "")
 
 PROVIDER_KEYS = {
     "openai": None,
@@ -86,10 +91,14 @@ AI_MODELS = [
     ("anthropic", "anthropic/claude-3-5-haiku-latest"),
 ]
 
-bytez_client = BytezOpenAI(
-    api_key=BYTEZ_API_KEY,
-    base_url="https://api.bytez.com/models/v2/openai/v1"
-)
+if BYTEZ_API_KEY:
+    bytez_client = BytezOpenAI(
+        api_key=BYTEZ_API_KEY,
+        base_url="https://api.bytez.com/models/v2/openai/v1"
+    )
+else:
+    bytez_client = None
+    logging.warning("BYTEZ_API_KEY berilmagan - AI chat funksiyasi o'chirilgan.")
 ADMIN_USERNAME = "@alijonov_ff"
 BOT_USERNAME = "@kerakli_boladi_bot"
 BOT_FOOTER = f"\n\n🤖 {BOT_USERNAME}"
@@ -1389,8 +1398,8 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             elapsed = (datetime.now() - datetime.fromisoformat(last_at)).total_seconds()
             if elapsed < REACTION_COOLDOWN_SECONDS:
                 return
-        except Exception:
-            pass
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Reaksiya cooldown vaqtini o'qib bo'lmadi ({last_at!r}): {e}")
 
     emojis_raw = get_channel_emojis(post.chat.id) or get_setting("reaction_emojis", ",".join(DEFAULT_REACTION_EMOJIS))
     emoji_list = [e.strip() for e in emojis_raw.split(",") if e.strip()] or DEFAULT_REACTION_EMOJIS
@@ -1717,10 +1726,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await text_to_speech(update, context, text)
 
     else:
-        if text and text.strip().isdigit():
-            await send_video_by_code(update, context, text.strip())
-        elif text and text.strip():
-            await send_file_by_word(update, context, text.strip())
+        query_text = (text or "").strip()
+        if not query_text:
+            return
+        # TUZATISH: avval raqamli matn faqat video kodi deb qaralardi. Kod topilmasa
+        # foydalanuvchi hech qanday javob olmasdi. Endi so'z-fayllarga ham qaraladi.
+        if query_text.isdigit() and await send_video_by_code(update, context, query_text):
+            return
+        await send_file_by_word(update, context, query_text)
 
 # ── QR VA TTS FUNKSIYALARI ───────────────────────────────────
 async def generate_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -1788,7 +1801,8 @@ async def text_to_speech(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
     context.user_data["state"] = None
     await increment_action_and_check_ad(update, context)
 
-async def send_video_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
+async def send_video_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str) -> bool:
+    """Kod bo'yicha videoni yuboradi. Video topilib yuborilgan bo'lsa True qaytaradi."""
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1797,13 +1811,37 @@ async def send_video_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE,
     conn.close()
 
     if not row:
-        return
+        return False
 
-    await update.message.reply_video(
-        video=file_id,
-        caption=f"🎬 {html.escape(label)}{BOT_FOOTER}" if label else BOT_FOOTER,
-        parse_mode="HTML"
-    )
+    # TUZATISH: avval row ochib olinmagan edi -> NameError: file_id / label.
+    file_id, label, is_prem = row[0], row[1] or "", row[2] or 0
+
+    if not file_id:
+        logger.warning(f"video_codes ichida '{code}' kodi uchun file_id bo'sh")
+        return False
+
+    # TUZATISH: is_premium bazadan o'qilardi, lekin tekshirilmasdi -> premium videolar hammaga ketardi.
+    if is_prem and not is_premium(user_id) and user_id not in ADMIN_IDS:
+        await update.message.reply_text(
+            f"👑 Bu video faqat <b>Premium</b> foydalanuvchilar uchun.\n\n"
+            f"Premium olish uchun: /Premiumoldi{BOT_FOOTER}",
+            parse_mode="HTML"
+        )
+        return True
+
+    try:
+        await update.message.reply_video(
+            video=file_id,
+            caption=f"🎬 {html.escape(label)}{BOT_FOOTER}" if label else BOT_FOOTER,
+            parse_mode="HTML"
+        )
+    except TelegramError as e:
+        logger.error(f"Video yuborilmadi (kod={code}): {e}")
+        await update.message.reply_text("❌ Bu videoni yuborib bo'lmadi. Admin bilan bog'laning.")
+        return True
+
+    await increment_action_and_check_ad(update, context)
+    return True
 
 async def show_password_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1939,6 +1977,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ask_universal_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    # TUZATISH: kalit bo'lmasa bytez_client None bo'ladi - avval bu AttributeError berardi.
+    if bytez_client is None:
+        await update.message.reply_text(
+            "❌ AI xizmati sozlanmagan (BYTEZ_API_KEY yo'q). Admin bilan bog'laning."
+        )
+        return
+
     wait_msg = await update.message.reply_text("⏳ O'ylanmoqda...")
     answer = None
     for provider, model_id in AI_MODELS:
@@ -1959,7 +2004,12 @@ async def ask_universal_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             logger.error(f"{provider} ({model_id}) xato: {e}")
             continue
 
-    await wait_msg.delete()
+    # TUZATISH: xabarni o'chirish o'zi ham xato berishi mumkin (allaqachon o'chirilgan bo'lsa)
+    # va bu javobni yuborishga to'sqinlik qilardi.
+    try:
+        await wait_msg.delete()
+    except TelegramError as e:
+        logger.warning(f"Kutish xabarini o'chirib bo'lmadi: {e}")
     if answer:
         await update.message.reply_text(answer)
     else:
@@ -2307,7 +2357,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"📐 <b>4K rasm</b>\n\n"
             f"📊 Bugungi: {used}/{limit}\n\n"
-            f"Kattalashtirmoqchi bo'lgan rasmni yuboring (uzun tomoni ~3840px gacha silliq kattalashtiriladi):",
+            "Kattalashtirmoqchi bo'lgan rasmni yuboring (uzun tomoni ~3840px gacha silliq kattalashtiriladi):",
             parse_mode="HTML",
             reply_markup=back_keyboard("back_useful")
         )
@@ -2315,8 +2365,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "contact_admin":
         context.user_data["state"] = "contact_admin"
         await query.edit_message_text(
-            f"📩 <b>Admin bilan bog'lanish</b>\n\n"
-            f"Xabaringizni yozib yuboring (matn, rasm yoki audio):",
+            "📩 <b>Admin bilan bog'lanish</b>\n\n"
+            "Xabaringizni yozib yuboring (matn, rasm yoki audio):",
             parse_mode="HTML",
             reply_markup=back_keyboard("back_useful")
         )
@@ -2429,8 +2479,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 p_str = make_progress_bar(percent)
                 await msg.edit_text(f"⏳ *{label}*\n\n`{p_str}`", parse_mode="Markdown")
-            except Exception:
-                pass
+            except TelegramError as e:
+                logger.debug(f"Progress xabarini yangilab bo'lmadi: {e}")
 
         try:
             file = await context.bot.get_file(file_id)
@@ -2576,6 +2626,69 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_menu_keyboard()
         )
 
+async def deliver_media_to_admins(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str) -> None:
+    """Foydalanuvchi media xabarini adminlarga yetkazadi.
+
+    TUZATISH: avval har bir media turi uchun kod takrorlanar edi va ikki muammo bor edi:
+      1) media xabarlar `admin_messages` jadvaliga yozilmasdi -> admin panelning
+         "Kelgan xabarlar" bo'limida ko'rinmasdi va ularga javob berib bo'lmasdi;
+      2) `except Exception: pass` sababli yuborish umuman muvaffaqiyatsiz bo'lsa ham
+         foydalanuvchiga "yuborildi" deb aytilardi (jimgina yo'qolardi).
+    """
+    user = update.effective_user
+
+    # Media xabarni ham admin panel uchun bazaga yozamiz.
+    note = f"[{kind}]"
+    caption = (update.message.caption or "").strip()
+    if caption:
+        note += f" {caption}"
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO admin_messages (user_id, user_name, message_text, sent_at) VALUES (?,?,?,?)",
+            (user.id, user.full_name, note, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        logger.error(f"admin_messages ga yozib bo'lmadi: {e}")
+
+    delivered = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                admin_id,
+                f"📩 <b>Yangi foydalanuvchi {html.escape(kind)}!</b>\n\n"
+                f"👤 Ism: {html.escape(user.full_name or '')}\n"
+                f"🆔 ID: <code>{user.id}</code>\n"
+                f"📛 Username: @{html.escape(user.username or 'yoq')}",
+                parse_mode="HTML"
+            )
+            await context.bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=update.message.chat_id,
+                message_id=update.message.message_id
+            )
+            delivered += 1
+        except TelegramError as e:
+            logger.error(f"Adminga ({admin_id}) media yetkazilmadi: {e}")
+
+    if delivered:
+        await update.message.reply_text(
+            f"✅ Xabaringiz adminga yuborildi! Tez orada javob berishadi.{BOT_FOOTER}",
+            parse_mode="HTML", reply_markup=back_keyboard("back_main")
+        )
+    else:
+        # Bazaga yozilgan, lekin bevosita yetkazilmagan - rostini aytamiz.
+        await update.message.reply_text(
+            f"⚠️ Xabaringiz saqlandi, lekin adminga hozir yetkazib bo'lmadi.\n"
+            f"Iltimos keyinroq qayta urinib ko'ring yoki {html.escape(ADMIN_USERNAME)} ga yozing.{BOT_FOOTER}",
+            parse_mode="HTML", reply_markup=back_keyboard("back_main")
+        )
+    context.user_data["state"] = None
+
+
 # ── RASM, VIDEO VA FAYLLARNI QAYTA ISHLASH (HANDLE MEDIA) ──────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2607,14 +2720,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "contact_admin":
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(admin_id, f"📩 <b>Yangi foydalanuvchi rasmi!</b> (ID: <code>{user_id}</code>):", parse_mode="HTML")
-                await context.bot.copy_message(chat_id=admin_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Rasmingiz adminga yuborildi!{BOT_FOOTER}", parse_mode="HTML", reply_markup=back_keyboard("back_main"))
-        context.user_data["state"] = None
+        await deliver_media_to_admins(update, context, "rasmi")
         return
 
     if state == "compress_input":
@@ -2695,8 +2801,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 p_str = make_progress_bar(percent)
                 await msg.edit_text(f"⏳ *{label}*\n\n`{p_str}`", parse_mode="Markdown")
-            except Exception:
-                pass
+            except TelegramError as e:
+                logger.debug(f"Progress xabarini yangilab bo'lmadi: {e}")
 
         try:
             result_bytes = await remove_background(buf.getvalue(), progress_cb=progress_cb)
@@ -2853,14 +2959,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "contact_admin":
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(admin_id, f"📩 <b>Yangi foydalanuvchi videosi!</b> (ID: <code>{user_id}</code>):", parse_mode="HTML")
-                await context.bot.copy_message(chat_id=admin_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Videongiz adminga yuborildi!{BOT_FOOTER}", parse_mode="HTML", reply_markup=back_keyboard("back_main"))
-        context.user_data["state"] = None
+        await deliver_media_to_admins(update, context, "videosi")
         return
 
     video_obj = update.message.video or update.message.video_note
@@ -2886,8 +2985,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 p_str = make_progress_bar(percent)
                 await msg.edit_text(f"⏳ *{label}*\n\n`{p_str}`", parse_mode="Markdown")
-            except Exception:
-                pass
+            except TelegramError as e:
+                logger.debug(f"Progress xabarini yangilab bo'lmadi: {e}")
 
         try:
             video_obj = update.message.video or update.message.video_note
@@ -3001,18 +3100,64 @@ async def handle_other_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if state == "contact_admin":
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(admin_id, f"📩 <b>Yangi foydalanuvchi fayli/mediasi!</b> (ID: <code>{user_id}</code>):", parse_mode="HTML")
-                await context.bot.copy_message(chat_id=admin_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Yuborgan faylingiz adminga yetkazildi!{BOT_FOOTER}", parse_mode="HTML", reply_markup=back_keyboard("back_main"))
-        context.user_data["state"] = None
+        await deliver_media_to_admins(update, context, "fayli/mediasi")
         return
 
 # ── MAIN FUNKSIYA ───────────────────────────────────────────
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global xato ushlagich.
+
+    TUZATISH: avval hech qanday error handler ro'yxatdan o'tmagan edi. Handler ichida
+    kutilmagan xato chiqsa foydalanuvchi hech qanday javob olmasdi va "bot ishlamayapti"
+    degan tuyg'u paydo bo'lardi.
+    """
+    logger.exception("Handler ichida ushlanmagan xato", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ Kutilmagan xatolik yuz berdi. Iltimos qaytadan urinib ko'ring "
+                "yoki /start bosing."
+            )
+        except TelegramError:
+            pass
+
+
+def _check_external_tools() -> None:
+    """ffmpeg/ffprobe bor-yo'qligini tekshiradi.
+
+    TUZATISH: dumaloq video, MP3 ajratish va WEBP emoji funksiyalari ffmpeg'ga tayanadi,
+    lekin u requirements.txt orqali o'rnatilmaydi. Serverda ffmpeg bo'lmasa bu bo'limlar
+    jimgina ishlamay qolardi. Endi ishga tushishda ogohlantiramiz.
+    """
+    import shutil
+    missing = [t for t in ("ffmpeg", "ffprobe") if not shutil.which(t)]
+    if missing:
+        logger.warning(
+            "DIQQAT: %s topilmadi. Dumaloq video, MP3 ajratish va WEBP emoji "
+            "funksiyalari ishlamaydi. O'rnatish: apt-get install -y ffmpeg "
+            "(Railway uchun nixpacks.toml fayliga qarang).",
+            ", ".join(missing)
+        )
+
+
 def main():
+    # TUZATISH: token bo'sh bo'lsa avval telegram kutubxonasidan tushunarsiz InvalidToken
+    # xatosi chiqardi. Endi aniq xabar beramiz.
+    if not BOT_TOKEN:
+        raise SystemExit(
+            "❌ BOT_TOKEN muhit o'zgaruvchisi berilmagan.\n"
+            "   Uni @BotFather dan oling va quyidagicha qo'shing:\n"
+            "     export BOT_TOKEN=123456:ABC-...\n"
+            "   Railway/PythonAnywhere'da esa \"Variables\" bo'limiga yozing."
+        )
+    if not ADMIN_IDS:
+        logger.warning(
+            "ADMIN_IDS bo'sh - admin panel va \"Admin bilan bog'lanish\" bo'limi "
+            "hech kimga xabar yubormaydi. ADMIN_IDS=7329434421 shaklida qo'shing."
+        )
+
+    _check_external_tools()
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -3035,6 +3180,9 @@ def main():
 
     # Text handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.CHANNEL_POST, handle_message))
+
+    # Global xato ushlagich (TUZATISH: avval yo'q edi)
+    app.add_error_handler(error_handler)
 
     print("✅ Telegram Bot barcha tuzatishlar bilan muvaffaqiyatli ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

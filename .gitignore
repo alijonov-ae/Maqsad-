@@ -1,0 +1,15 @@
+# Muhit o'zgaruvchilari - hech qachon commit qilinmasin
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Mahalliy baza (Railway Volume ichida saqlanadi)
+*.db-journal
+*.db-wal
+*.db-shm
