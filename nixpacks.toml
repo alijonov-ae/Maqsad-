@@ -1,0 +1,8 @@
+# Railway / Nixpacks konfiguratsiyasi.
+# ffmpeg bot uchun MAJBURIY: dumaloq video, MP3 ajratish va WEBP emoji
+# funksiyalari shunga tayanadi. Busiz o'sha bo'limlar ishlamaydi.
+[phases.setup]
+nixPkgs = ["python313", "ffmpeg"]
+
+[start]
+cmd = "python bot_fixed.py"
