@@ -1213,6 +1213,14 @@ async def remove_background(image_bytes: bytes, progress_cb=None) -> bytes:
     if progress_cb:
         await progress_cb(10, "Rasm yuklanmoqda...")
 
+    def convert_png_to_webp(png_bytes: bytes) -> bytes:
+    """PNG (shaffof fon) rasmni WEBP formatga o'tkazadi, shaffoflikni saqlaydi."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    out = io.BytesIO()
+    img.save(out, format="WEBP", lossless=True)
+    out.seek(0)
+    return out.getvalue()
+
     def _do_request():
         resp = requests.post(
             "https://api.rembg.com/rmbg",
